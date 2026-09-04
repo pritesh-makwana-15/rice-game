@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Anant,Avan Bike Race Game</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#111;
+    display:flex; justify-content:center; align-items:center;
+    height:100vh; overflow:hidden;
+    font-family: Arial, sans-serif;
+    touch-action: none;
+  }
+  #gameWrap {
+    position:relative;
+    width:400px; height:100vh; max-height:700px;
+    background:#333;
+    overflow:hidden;
+    border-left:6px solid #222; border-right:6px solid #222;
+  }
+  canvas { display:block; background:#555; }
+
+  /* HUD */
+  #hud {
+    position:absolute; top:10px; left:0; width:100%;
+    display:flex; justify-content:space-between; padding:0 12px;
+    color:#fff; font-weight:bold; font-size:14px;
+    text-shadow:1px 1px 2px #000;
+    z-index:10;
+  }
+
+  /* Screens */
+  .screen {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.85);
+    display:flex; flex-direction:column; justify-content:center; align-items:center;
+    color:#fff; text-align:center; z-index:20;
+  }
+  .screen h1 { font-size:28px; margin-bottom:20px; }
+  .screen p { margin-bottom:10px; font-size:16px; }
+  .btn {
+    padding:12px 30px; margin:6px; font-size:16px; font-weight:bold;
+    border:none; border-radius:20px; cursor:pointer; color:#fff; width:200px;
+  }
+  #easyBtn { background:#06d6a0; }
+  #normalBtn { background:#ffb703; }
+  #hardBtn { background:#ff4136; }
+  #startBtn, #restartBtn { background:#118ab2; }
+  #pauseBtn {
+    position:absolute; top:35px; right:12px; z-index:15;
+    background:rgba(255,255,255,0.2); color:#fff; border:none;
+    border-radius:8px; padding:5px 10px; font-size:14px; cursor:pointer;
+  }
+
+  /* Touch controls */
+  #touchControls {
+    position:absolute; bottom:15px; left:0; width:100%;
+    display:flex; justify-content:space-between; padding:0 15px;
+    z-index:15;
+  }
+  .touchBtn {
+    width:60px; height:60px; border-radius:50%;
+    background:rgba(255,255,255,0.25);
+    color:#fff; font-size:24px; display:flex; align-items:center; justify-content:center;
+    user-select:none;
+  }
+  #accelBtn { background:rgba(6,214,160,0.4); }
+</style>
+</head>
+<body>
+
+<div id="gameWrap">
+  <canvas id="gameCanvas" width="400" height="700"></canvas>
+
+  <div id="hud">
+    <span>🏆 <span id="score">0</span></span>
+    <span>📏 <span id="distance">0</span>m</span>
+    <span>❤️ <span id="lives">3</span></span>
+  </div>
+  <button id="pauseBtn">⏸ Pause</button>
+
+  <div id="touchControls">
+    <div class="touchBtn" id="leftBtn">◀</div>
+    <div class="touchBtn" id="accelBtn">⬆</div>
+    <div class="touchBtn" id="rightBtn">▶</div>
+  </div>
+
+  <!-- Start / Difficulty screen -->
+  <div class="screen" id="startScreen">
+    <h1>🏍️ Anant,Avan Bike Race</h1>
+    <p>Choose Difficulty</p>
+    <button class="btn" id="easyBtn">😊 Easy</button>
+    <button class="btn" id="normalBtn">🙂 Normal</button>
+    <button class="btn" id="hardBtn">😈 Hard</button>
+  </div>
+
+  <!-- Pause screen -->
+  <div class="screen" id="pauseScreen" style="display:none;">
+    <h1>⏸ Paused</h1>
+    <button class="btn" id="resumeBtn">▶ Resume</button>
+  </div>
+
+  <!-- Game Over screen -->
+  <div class="screen" id="overScreen" style="display:none;">
+    <h1>💥 Game Over</h1>
+    <p id="finalScore">Score: 0</p>
+    <p id="finalDistance">Distance: 0m</p>
+    <p id="highScoreText">High Score: 0</p>
+    <button class="btn" id="restartBtn">🔄 Play Again</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ---- DOM refs ----
+const scoreEl = document.getElementById('score');
+const distanceEl = document.getElementById('distance');
+const livesEl = document.getElementById('lives');
+const startScreen = document.getElementById('startScreen');
+const pauseScreen = document.getElementById('pauseScreen');
+const overScreen = document.getElementById('overScreen');
+const finalScoreEl = document.getElementById('finalScore');
+const finalDistanceEl = document.getElementById('finalDistance');
+const highScoreText = document.getElementById('highScoreText');
+const pauseBtn = document.getElementById('pauseBtn');
+
+// ---- Sound (Web Audio API beeps) ----
+function beep(freq, duration, type='sine', vol=0.15) {
+  try {
+    const ctxA = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctxA.createOscillator();
+    const gain = ctxA.createGain();
+    osc.connect(gain); gain.connect(ctxA.destination);
+    osc.frequency.value = freq; osc.type = type;
+    gain.gain.setValueAtTime(vol, ctxA.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctxA.currentTime + duration);
+    osc.start(); osc.stop(ctxA.currentTime + duration);
+  } catch(e) {}
+}
+const crashSound = () => beep(120, 0.4, 'sawtooth', 0.25);
+const coinSound = () => beep(880, 0.15, 'sine', 0.15);
+let engineOn = false;
+
+// ---- Game state ----
+let difficulty = 'normal';
+let settings = {
+  easy:   { obstacleSpeed: 3, spawnRate: 90,  maxObstacles: 3 },
+  normal: { obstacleSpeed: 4.5, spawnRate: 65, maxObstacles: 4 },
+  hard:   { obstacleSpeed: 6.5, spawnRate: 45, maxObstacles: 5 }
+};
+
+let bike = { x: W/2 - 20, y: H - 120, w: 40, h: 70, speedX: 0, lean: 0 };
+let roadOffset = 0;
+let obstacles = [];
+let coins = [];
+let score = 0;
+let distance = 0;
+let lives = 3;
+let frame = 0;
+let gameSpeed = 5;
+let running = false;
+let paused = false;
+let keys = {};
+let highScore = 0;
+
+// ---- Road lane setup ----
+const roadWidth = 320;
+const roadX = (W - roadWidth) / 2;
+
+function drawRoad() {
+  ctx.fillStyle = '#444';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#555';
+  ctx.fillRect(roadX, 0, roadWidth, H);
+
+  // side edges
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(0, 0, roadX, H);
+  ctx.fillRect(roadX + roadWidth, 0, roadX, H);
+
+  // lane markings
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([25, 25]);
+  ctx.lineDashOffset = -roadOffset;
+  for (let lane = 1; lane < 3; lane++) {
+    const x = roadX + (roadWidth / 3) * lane;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
+function drawBike() {
+  ctx.save();
+  ctx.translate(bike.x + bike.w/2, bike.y + bike.h/2);
+  ctx.rotate(bike.lean * 0.15);
+  ctx.font = '50px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🏍️', 0, 0);
+  ctx.restore();
+}
+
+function spawnObstacle() {
+  const lane = Math.floor(Math.random() * 3);
+  const laneWidth = roadWidth / 3;
+  const x = roadX + lane * laneWidth + laneWidth/2 - 20;
+  obstacles.push({ x, y: -80, w: 40, h: 60, emoji: Math.random() < 0.5 ? '🚗' : '🚕' });
+}
+
+function spawnCoin() {
+  const lane = Math.floor(Math.random() * 3);
+  const laneWidth = roadWidth / 3;
+  const x = roadX + lane * laneWidth + laneWidth/2 - 15;
+  coins.push({ x, y: -50, w: 30, h: 30 });
+}
+
+function rectsCollide(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// ---- Game loop ----
+function update() {
+  if (!running || paused) return;
+  frame++;
+
+  const cfg = settings[difficulty];
+  gameSpeed = cfg.obstacleSpeed + Math.min(distance / 500, 4); // difficulty ramps with distance
+
+  // Steering
+  if (keys['ArrowLeft'] || keys['left']) { bike.speedX = -5; bike.lean = -1; }
+  else if (keys['ArrowRight'] || keys['right']) { bike.speedX = 5; bike.lean = 1; }
+  else { bike.speedX = 0; bike.lean *= 0.8; }
+
+  bike.x += bike.speedX;
+  bike.x = Math.max(roadX, Math.min(roadX + roadWidth - bike.w, bike.x));
+
+  // Road scroll
+  roadOffset += gameSpeed;
+  distance += gameSpeed / 10;
+  distanceEl.textContent = Math.floor(distance);
+
+  // Spawn obstacles
+  if (frame % cfg.spawnRate === 0 && obstacles.length < cfg.maxObstacles) {
+    spawnObstacle();
+  }
+  // Spawn coins
+  if (frame % 70 === 0) {
+    spawnCoin();
+  }
+
+  // Move obstacles
+  obstacles.forEach(o => o.y += gameSpeed);
+  obstacles = obstacles.filter(o => o.y < H + 80);
+
+  // Move coins
+  coins.forEach(c => c.y += gameSpeed);
+  coins = coins.filter(c => c.y < H + 50);
+
+  // Collision: obstacles
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    if (rectsCollide(bike, obstacles[i])) {
+      obstacles.splice(i, 1);
+      lives--;
+      livesEl.textContent = lives;
+      crashSound();
+      if (lives <= 0) {
+        endGame();
+        return;
+      }
+    }
+  }
+
+  // Collision: coins
+  for (let i = coins.length - 1; i >= 0; i--) {
+    if (rectsCollide(bike, coins[i])) {
+      coins.splice(i, 1);
+      score += 20;
+      scoreEl.textContent = score;
+      coinSound();
+    }
+  }
+
+  // Passive score for distance
+  if (frame % 10 === 0) {
+    score += 1;
+    scoreEl.textContent = score;
+  }
+}
+
+function draw() {
+  drawRoad();
+
+  // draw coins
+  ctx.font = '28px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  coins.forEach(c => ctx.fillText('🪙', c.x + c.w/2, c.y + c.h/2));
+
+  // draw obstacles
+  ctx.font = '46px serif';
+  obstacles.forEach(o => ctx.fillText(o.emoji, o.x + o.w/2, o.y + o.h/2));
+
+  drawBike();
+}
+
+function loop() {
+  update();
+  draw();
+  if (running) requestAnimationFrame(loop);
+}
+
+// ---- Start / Reset ----
+function startGame(level) {
+  difficulty = level;
+  bike = { x: W/2 - 20, y: H - 120, w: 40, h: 70, speedX: 0, lean: 0 };
+  obstacles = [];
+  coins = [];
+  score = 0;
+  distance = 0;
+  lives = 3;
+  frame = 0;
+  roadOffset = 0;
+  scoreEl.textContent = 0;
+  distanceEl.textContent = 0;
+  livesEl.textContent = 3;
+  running = true;
+  paused = false;
+  startScreen.style.display = 'none';
+  overScreen.style.display = 'none';
+  pauseScreen.style.display = 'none';
+  requestAnimationFrame(loop);
+}
+
+function endGame() {
+  running = false;
+  if (score > highScore) highScore = score;
+  finalScoreEl.textContent = 'Score: ' + score;
+  finalDistanceEl.textContent = 'Distance: ' + Math.floor(distance) + 'm';
+  highScoreText.textContent = 'High Score: ' + highScore;
+  overScreen.style.display = 'flex';
+}
+
+// ---- Controls: keyboard ----
+document.addEventListener('keydown', e => { keys[e.key] = true; });
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// ---- Controls: touch ----
+function bindTouch(id, key) {
+  const el = document.getElementById(id);
+  const set = (v) => (e) => { e.preventDefault(); keys[key] = v; };
+  el.addEventListener('touchstart', set(true));
+  el.addEventListener('touchend', set(false));
+  el.addEventListener('mousedown', set(true));
+  el.addEventListener('mouseup', set(false));
+  el.addEventListener('mouseleave', set(false));
+}
+bindTouch('leftBtn', 'left');
+bindTouch('rightBtn', 'right');
+bindTouch('accelBtn', 'accel');
+
+// ---- Difficulty buttons ----
+document.getElementById('easyBtn').addEventListener('click', () => startGame('easy'));
+document.getElementById('normalBtn').addEventListener('click', () => startGame('normal'));
+document.getElementById('hardBtn').addEventListener('click', () => startGame('hard'));
+document.getElementById('restartBtn').addEventListener('click', () => {
+  startScreen.style.display = 'flex';
+  overScreen.style.display = 'none';
+});
+
+// ---- Pause / Resume ----
+pauseBtn.addEventListener('click', () => {
+  if (!running) return;
+  paused = true;
+  pauseScreen.style.display = 'flex';
+});
+document.getElementById('resumeBtn').addEventListener('click', () => {
+  paused = false;
+  pauseScreen.style.display = 'none';
+  requestAnimationFrame(loop);
+});
+</script>
+
+</body>
+</html>
